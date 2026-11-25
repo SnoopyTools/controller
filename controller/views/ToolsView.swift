@@ -6,20 +6,18 @@
 import SwiftUI
 
 struct ToolsView: View {
+    @EnvironmentObject private var mgr: controllermgr
+
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                VStack(spacing: 16) {
-                    Image(systemName: "wrench.and.screwdriver")
-                        .font(.system(size: 48))
-                        .foregroundColor(.gray.opacity(0.4))
-                    Text("No tools available")
-                        .font(.headline)
-                        .foregroundColor(.gray)
-                    Text("Tools will be added here soon.")
-                        .font(.caption)
-                        .foregroundColor(.gray.opacity(0.6))
+            List {
+                Section("Filesystem") {
+                    NavigationLink {
+                        FileBrowserView(initialPath: "/var/mobile")
+                            .environmentObject(mgr)
+                    } label: {
+                        Label("File Browser", systemImage: "folder.fill")
+                    }
                 }
             }
             .navigationTitle("Tools")
