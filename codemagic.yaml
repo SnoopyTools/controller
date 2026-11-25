@@ -33,6 +33,9 @@ workflows:
       - name: Install ldid
         script: brew install ldid
 
+      - name: Generate Xcode project
+        script: brew install xcodegen && xcodegen generate
+
       - name: Build archive (unsigned)
         script: |
           xcodebuild archive \
