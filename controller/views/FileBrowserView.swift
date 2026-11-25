@@ -76,7 +76,7 @@ struct FileBrowserView: View {
     @State private var shareURL: URL?
 
     init(initialPath: String = "/var/mobile") {
-        _currentPath = State(initialValue: initialPath)
+        _currentPath = State(initialValue: Self.normalizePath(initialPath))
     }
 
     private var appDocumentsPath: String {
@@ -136,12 +136,29 @@ struct FileBrowserView: View {
         }
     }
 
+    private var backendStatusLabel: String {
+        if activeUsesVFS {
+            if !mgr.vfsready { return "VFS Not Ready" }
+            return errorMessage != nil ? "VFS Read Error" : "VFS Ready"
+        }
+        return "FileManager"
+    }
+
+    private var backendStatusColor: Color {
+        if activeUsesVFS {
+            if !mgr.vfsready { return .orange }
+            return errorMessage != nil ? .red : .green
+        }
+        return .purple
+    }
+
     private var breadcrumbs: [(title: String, path: String)] {
-        if currentPath == "/" {
+        let clean = Self.normalizePath(currentPath)
+        if clean == "/" {
             return [("Root", "/")]
         }
         var crumbs: [(String, String)] = [("Root", "/")]
-        let parts = currentPath.split(separator: "/").map(String.init)
+        let parts = clean.split(separator: "/").map(String.init)
         var running = ""
         for part in parts {
             running += "/" + part
@@ -152,7 +169,7 @@ struct FileBrowserView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
 
             VStack(spacing: 0) {
                 switch skin {
@@ -169,12 +186,13 @@ struct FileBrowserView: View {
                 drawerOverlay
             }
         }
+        .background(Color.black)
         .navigationTitle(displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search in \(displayTitle)")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             showDrawer.toggle()
@@ -196,46 +214,48 @@ struct FileBrowserView: View {
             }
 
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 12) {
-                    Menu {
-                        ForEach(BrowserSkin.allCases) { option in
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    skin = option
-                                }
-                            } label: {
-                                Label(option.rawValue, systemImage: skin == option ? "checkmark" : option.icon)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "paintbrush.fill")
-                            .foregroundColor(.purple)
-                    }
-
-                    Menu {
-                        Picker("Sort By", selection: $sortMode) {
-                            ForEach(BrowserSortMode.allCases) { mode in
-                                Text(mode.rawValue).tag(mode)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .foregroundColor(.purple)
-                    }
-
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            isGridView.toggle()
-                        }
-                    } label: {
-                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
-                            .foregroundColor(.purple)
-                    }
-
+                HStack(spacing: 10) {
                     Button {
                         reloadDirectory()
                     } label: {
                         Image(systemName: "arrow.clockwise")
+                            .foregroundColor(.purple)
+                    }
+
+                    Menu {
+                        Section("Skin") {
+                            ForEach(BrowserSkin.allCases) { option in
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        skin = option
+                                    }
+                                } label: {
+                                    Label(option.rawValue, systemImage: skin == option ? "checkmark" : option.icon)
+                                }
+                            }
+                        }
+
+                        Section("Sort By") {
+                            ForEach(BrowserSortMode.allCases) { mode in
+                                Button {
+                                    sortMode = mode
+                                } label: {
+                                    Label(mode.rawValue, systemImage: sortMode == mode ? "checkmark" : "arrow.up.arrow.down")
+                                }
+                            }
+                        }
+
+                        Section("Layout") {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    isGridView.toggle()
+                                }
+                            } label: {
+                                Label(isGridView ? "Switch to List" : "Switch to Grid", systemImage: isGridView ? "list.bullet" : "square.grid.2x2")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paintbrush.fill")
                             .foregroundColor(.purple)
                     }
                 }
@@ -288,15 +308,17 @@ struct FileBrowserView: View {
     private var asusSkinBody: some View {
         VStack(spacing: 0) {
             VStack(spacing: 10) {
-                HStack {
+                HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("ASUS Style • \(skin.rawValue)")
+                        Text(skin.rawValue)
                             .font(.caption.weight(.semibold))
                             .foregroundColor(.purple)
+                            .lineLimit(1)
                         Text(currentPath)
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.gray)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     Spacer()
                     Picker("Backend", selection: $backend) {
@@ -305,7 +327,7 @@ struct FileBrowserView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 155)
+                    .fixedSize()
                     .onChange(of: backend) { _ in
                         reloadDirectory()
                     }
@@ -324,6 +346,7 @@ struct FileBrowserView: View {
                                     Text(item.title)
                                         .font(.caption.weight(.medium))
                                         .foregroundColor(.white)
+                                        .lineLimit(1)
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
@@ -424,14 +447,16 @@ struct FileBrowserView: View {
                     Text("ROOT EXPLORER")
                         .font(.caption2.weight(.bold))
                         .foregroundColor(.purple)
+                        .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Color.purple.opacity(0.2))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
 
-                    Text(activeUsesVFS ? "VFS: READY" : "FS: SANDBOX")
+                    Text(backendStatusLabel.uppercased())
                         .font(.caption2.weight(.bold))
-                        .foregroundColor(activeUsesVFS ? .green : .gray)
+                        .foregroundColor(backendStatusColor)
+                        .lineLimit(1)
 
                     Spacer()
 
@@ -441,7 +466,7 @@ struct FileBrowserView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 150)
+                    .fixedSize()
                     .onChange(of: backend) { _ in
                         reloadDirectory()
                     }
@@ -450,6 +475,8 @@ struct FileBrowserView: View {
                 Text(currentPath)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundColor(.white)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -534,14 +561,16 @@ struct FileBrowserView: View {
     // MARK: - Shared Header, Breadcrumbs, List/Grid & Drawer
 
     private var headerBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(activeUsesVFS ? Color.green : Color.purple)
+                    .fill(backendStatusColor)
                     .frame(width: 8, height: 8)
-                Text(activeUsesVFS ? "VFS Active" : "FileManager")
+                Text(backendStatusLabel)
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.white)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -556,7 +585,7 @@ struct FileBrowserView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 170)
+            .fixedSize()
             .onChange(of: backend) { _ in
                 reloadDirectory()
             }
@@ -581,6 +610,7 @@ struct FileBrowserView: View {
                                 }
                                 Text(crumb.title)
                                     .font(.caption.weight(index == breadcrumbs.count - 1 ? .semibold : .regular))
+                                    .lineLimit(1)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -835,10 +865,12 @@ struct FileBrowserView: View {
     private var bottomStatusBar: some View {
         let folderCount = sortedAndFilteredEntries.filter { $0.isDirectory }.count
         let fileCount = sortedAndFilteredEntries.count - folderCount
-        return HStack {
+        return HStack(spacing: 10) {
             Text("\(folderCount) folders, \(fileCount) files")
                 .font(.caption2)
                 .foregroundColor(.gray)
+                .lineLimit(1)
+                .fixedSize()
             Spacer()
             Text(currentPath)
                 .font(.system(.caption2, design: .monospaced))
@@ -847,10 +879,10 @@ struct FileBrowserView: View {
                 .truncationMode(.middle)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .background(Color(white: 0.07))
+        .padding(.vertical, 8)
+        .background(Color(white: 0.08))
         .overlay(
-            Divider().background(Color.white.opacity(0.08)),
+            Divider().background(Color.white.opacity(0.12)),
             alignment: .top
         )
     }
@@ -858,7 +890,6 @@ struct FileBrowserView: View {
     private var drawerOverlay: some View {
         ZStack(alignment: .leading) {
             Color.black.opacity(0.6)
-                .ignoresSafeArea()
                 .onTapGesture {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showDrawer = false
@@ -968,6 +999,13 @@ struct FileBrowserView: View {
 
     // MARK: - Helpers & Existing Filesystem Logic
 
+    private static func normalizePath(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "/" { return "/" }
+        let components = trimmed.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        return components.isEmpty ? "/" : "/" + components.joined(separator: "/")
+    }
+
     private var displayTitle: String {
         if currentPath == "/" { return "Root" }
         let name = (currentPath as NSString).lastPathComponent
@@ -975,14 +1013,18 @@ struct FileBrowserView: View {
     }
 
     private func parentPath(of path: String) -> String {
-        if path == "/" { return "/" }
-        let parent = (path as NSString).deletingLastPathComponent
-        return parent.isEmpty ? "/" : parent
+        let clean = Self.normalizePath(path)
+        if clean == "/" { return "/" }
+        let parent = (clean as NSString).deletingLastPathComponent
+        return Self.normalizePath(parent.isEmpty ? "/" : parent)
     }
 
     private func joinPath(_ base: String, _ child: String) -> String {
-        if base == "/" { return "/\(child)" }
-        return (base as NSString).appendingPathComponent(child)
+        let cleanBase = Self.normalizePath(base)
+        let cleanChild = child.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if cleanChild.isEmpty { return cleanBase }
+        if cleanBase == "/" { return "/\(cleanChild)" }
+        return "\(cleanBase)/\(cleanChild)"
     }
 
     private func badgeStyle(for entry: BrowserEntry) -> (icon: String, color: Color) {
@@ -1008,20 +1050,23 @@ struct FileBrowserView: View {
     }
 
     private func navigate(to path: String) {
-        currentPath = path
+        let nextPath = Self.normalizePath(path)
+        globallogger.log("[BROWSER] Navigate \(currentPath) -> \(nextPath)")
+        currentPath = nextPath
         searchText = ""
         reloadDirectory()
     }
 
     private func reloadDirectory() {
         errorMessage = nil
-        let targetPath = currentPath
+        let targetPath = Self.normalizePath(currentPath)
+        currentPath = targetPath
         let shouldUseVFS = activeUsesVFS
 
         if shouldUseVFS {
             guard mgr.vfsready else {
                 entries = []
-                errorMessage = "VFS not ready (run exploit first or switch to FileManager)."
+                errorMessage = "VFS not ready (run exploit first or switch to FS)."
                 return
             }
             if let vfsItems = mgr.vfslistdir(path: targetPath) {
@@ -1041,6 +1086,7 @@ struct FileBrowserView: View {
             } else {
                 entries = []
                 errorMessage = "VFS listdir failed for \(targetPath)"
+                globallogger.log("[BROWSER] VFS listdir failed for \(targetPath)")
             }
         } else {
             let fm = FileManager.default
@@ -1069,6 +1115,7 @@ struct FileBrowserView: View {
             } catch {
                 entries = []
                 errorMessage = error.localizedDescription
+                globallogger.log("[BROWSER] FileManager failed for \(targetPath): \(error.localizedDescription)")
             }
         }
     }
