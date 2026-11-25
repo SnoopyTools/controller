@@ -1,12 +1,45 @@
 import SwiftUI
 import UIKit
 
-enum BrowserBackend: String, CaseIterable, Identifiable {
-    case auto = "Auto (VFS / FS)"
-    case vfs = "VFS"
-    case fileManager = "FileManager"
+enum BrowserSkin: String, CaseIterable, Identifiable {
+    case solid = "Solid Explorer"
+    case asus = "ASUS File Manager"
+    case rootExplorer = "Root Explorer"
 
     var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .solid: return "square.grid.2x2.fill"
+        case .asus: return "sparkles.rectangle.stack.fill"
+        case .rootExplorer: return "terminal.fill"
+        }
+    }
+}
+
+enum BrowserBackend: String, CaseIterable, Identifiable {
+    case auto = "Auto"
+    case vfs = "VFS"
+    case fileManager = "FS"
+
+    var id: String { rawValue }
+}
+
+enum BrowserSortMode: String, CaseIterable, Identifiable {
+    case name = "Name"
+    case size = "Size"
+    case kind = "Type"
+
+    var id: String { rawValue }
+}
+
+struct QuickBookmark: Identifiable {
+    let id = UUID()
+    let title: String
+    let subtitle: String
+    let path: String
+    let icon: String
+    let tint: Color
 }
 
 struct BrowserEntry: Identifiable, Hashable {
@@ -21,16 +54,24 @@ struct BrowserEntry: Identifiable, Hashable {
         guard !isDirectory, let size, size >= 0 else { return "" }
         return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }
+
+    var fileExtension: String {
+        (name as NSString).pathExtension.lowercased()
+    }
 }
 
 struct FileBrowserView: View {
     @EnvironmentObject private var mgr: controllermgr
 
     @State private var currentPath: String
+    @State private var skin: BrowserSkin = .solid
     @State private var backend: BrowserBackend = .auto
+    @State private var sortMode: BrowserSortMode = .name
+    @State private var isGridView: Bool = false
     @State private var entries: [BrowserEntry] = []
     @State private var errorMessage: String?
     @State private var searchText: String = ""
+    @State private var showDrawer: Bool = false
     @State private var previewEntry: BrowserEntry?
     @State private var shareURL: URL?
 
@@ -38,10 +79,53 @@ struct FileBrowserView: View {
         _currentPath = State(initialValue: initialPath)
     }
 
-    private var filteredEntries: [BrowserEntry] {
+    private var appDocumentsPath: String {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/var/mobile"
+    }
+
+    private var collectionBookmarks: [QuickBookmark] {
+        [
+            QuickBookmark(title: "Documents", subtitle: "/var/mobile/Documents", path: "/var/mobile/Documents", icon: "doc.text.fill", tint: .purple),
+            QuickBookmark(title: "Downloads", subtitle: "/var/mobile/Downloads", path: "/var/mobile/Downloads", icon: "arrow.down.circle.fill", tint: .indigo),
+            QuickBookmark(title: "Pictures", subtitle: "/var/mobile/Media/DCIM", path: "/var/mobile/Media/DCIM", icon: "photo.fill.on.rectangle.fill", tint: .pink),
+            QuickBookmark(title: "Videos", subtitle: "/var/mobile/Media/DCIM", path: "/var/mobile/Media/DCIM", icon: "film.fill", tint: .orange),
+            QuickBookmark(title: "Media & Audio", subtitle: "/var/mobile/Media", path: "/var/mobile/Media", icon: "music.note.list", tint: .teal)
+        ]
+    }
+
+    private var storageBookmarks: [QuickBookmark] {
+        [
+            QuickBookmark(title: "App Sandbox", subtitle: "Local Documents", path: appDocumentsPath, icon: "shippingbox.fill", tint: .purple),
+            QuickBookmark(title: "Device Root", subtitle: "/", path: "/", icon: "internaldrive.fill", tint: .purple),
+            QuickBookmark(title: "Mobile Home", subtitle: "/var/mobile", path: "/var/mobile", icon: "house.fill", tint: .blue),
+            QuickBookmark(title: "App Containers", subtitle: "/var/containers/Bundle/Application", path: "/var/containers/Bundle/Application", icon: "square.grid.2x2.fill", tint: .cyan),
+            QuickBookmark(title: "System Library", subtitle: "/System/Library", path: "/System/Library", icon: "gearshape.2.fill", tint: .gray)
+        ]
+    }
+
+    private var sortedAndFilteredEntries: [BrowserEntry] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return entries }
-        return entries.filter { $0.name.localizedCaseInsensitiveContains(q) }
+        let base = q.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(q) }
+
+        return base.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory {
+                return lhs.isDirectory && !rhs.isDirectory
+            }
+            switch sortMode {
+            case .name:
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            case .size:
+                let lSize = lhs.size ?? -1
+                let rSize = rhs.size ?? -1
+                if lSize != rSize { return lSize > rSize }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            case .kind:
+                if lhs.fileExtension != rhs.fileExtension {
+                    return lhs.fileExtension.localizedStandardCompare(rhs.fileExtension) == .orderedAscending
+                }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+        }
     }
 
     private var activeUsesVFS: Bool {
@@ -52,79 +136,108 @@ struct FileBrowserView: View {
         }
     }
 
+    private var breadcrumbs: [(title: String, path: String)] {
+        if currentPath == "/" {
+            return [("Root", "/")]
+        }
+        var crumbs: [(String, String)] = [("Root", "/")]
+        let parts = currentPath.split(separator: "/").map(String.init)
+        var running = ""
+        for part in parts {
+            running += "/" + part
+            crumbs.append((part, running))
+        }
+        return crumbs
+    }
+
     var body: some View {
-        List {
-            if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .font(.footnote)
-                        .foregroundColor(.red)
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                switch skin {
+                case .solid:
+                    solidSkinBody
+                case .asus:
+                    asusSkinBody
+                case .rootExplorer:
+                    rootExplorerSkinBody
                 }
             }
 
-            Section {
-                HStack(spacing: 8) {
-                    Image(systemName: activeUsesVFS ? "externaldrive.connected.to.line.below.fill" : "folder.fill")
-                        .foregroundColor(.purple)
-                    Text(currentPath)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(.primary)
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                }
-
-                Picker("Backend", selection: $backend) {
-                    ForEach(BrowserBackend.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: backend) { _ in
-                    reloadDirectory()
-                }
-            }
-
-            Section {
-                if filteredEntries.isEmpty {
-                    Text(errorMessage == nil ? "Empty or unreadable directory" : "No entries loaded")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(filteredEntries) { entry in
-                        row(for: entry)
-                    }
-                }
+            if showDrawer {
+                drawerOverlay
             }
         }
         .navigationTitle(displayTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "Filter")
+        .searchable(text: $searchText, prompt: "Search in \(displayTitle)")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 HStack(spacing: 12) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showDrawer.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundColor(.purple)
+                    }
+
                     if currentPath != "/" {
                         Button {
                             navigate(to: parentPath(of: currentPath))
                         } label: {
-                            Label("Up", systemImage: "chevron.up")
-                        }
-                    }
-                    Menu("Jump") {
-                        Button("/") { navigate(to: "/") }
-                        Button("/var/mobile") { navigate(to: "/var/mobile") }
-                        Button("/var/containers/Bundle/Application") { navigate(to: "/var/containers/Bundle/Application") }
-                        Button("/System/Library") { navigate(to: "/System/Library") }
-                        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                            Button("App Documents") { navigate(to: docs.path) }
+                            Image(systemName: "arrow.up.to.line")
+                                .foregroundColor(.purple)
                         }
                     }
                 }
             }
+
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    reloadDirectory()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                HStack(spacing: 12) {
+                    Menu {
+                        ForEach(BrowserSkin.allCases) { option in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    skin = option
+                                }
+                            } label: {
+                                Label(option.rawValue, systemImage: skin == option ? "checkmark" : option.icon)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paintbrush.fill")
+                            .foregroundColor(.purple)
+                    }
+
+                    Menu {
+                        Picker("Sort By", selection: $sortMode) {
+                            ForEach(BrowserSortMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .foregroundColor(.purple)
+                    }
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isGridView.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
+                            .foregroundColor(.purple)
+                    }
+
+                    Button {
+                        reloadDirectory()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .foregroundColor(.purple)
+                    }
                 }
             }
         }
@@ -145,321 +258,358 @@ struct FileBrowserView: View {
         }
     }
 
-    private var displayTitle: String {
-        if currentPath == "/" { return "/" }
-        let name = (currentPath as NSString).lastPathComponent
-        return name.isEmpty ? currentPath : name
-    }
+    // MARK: - Skin 1: Solid Explorer
 
-    private func parentPath(of path: String) -> String {
-        if path == "/" { return "/" }
-        let parent = (path as NSString).deletingLastPathComponent
-        return parent.isEmpty ? "/" : parent
-    }
+    private var solidSkinBody: some View {
+        VStack(spacing: 0) {
+            headerBar
+            breadcrumbBar
 
-    private func joinPath(_ base: String, _ child: String) -> String {
-        if base == "/" { return "/\(child)" }
-        return (base as NSString).appendingPathComponent(child)
-    }
+            if let errorMessage {
+                errorCard(errorMessage)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+            }
 
-    @ViewBuilder
-    private func row(for entry: BrowserEntry) -> some View {
-        Button {
-            if entry.isDirectory {
-                navigate(to: entry.path)
+            if sortedAndFilteredEntries.isEmpty {
+                emptyStateView
+            } else if isGridView {
+                gridContent
             } else {
-                previewEntry = entry
+                listContent
             }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: entry.isDirectory ? "folder.fill" : iconName(for: entry.name))
-                    .foregroundColor(entry.isDirectory ? .purple : .secondary)
-                    .frame(width: 22)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.name)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                    if !entry.isDirectory && !entry.formattedSize.isEmpty {
-                        Text(entry.formattedSize)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+            bottomStatusBar
+        }
+    }
+
+    // MARK: - Skin 2: ASUS File Manager
+
+    private var asusSkinBody: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("ASUS Style • \(skin.rawValue)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.purple)
+                        Text(currentPath)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(.gray)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Picker("Backend", selection: $backend) {
+                        ForEach(BrowserBackend.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 155)
+                    .onChange(of: backend) { _ in
+                        reloadDirectory()
                     }
                 }
 
-                Spacer()
-
-                if entry.isDirectory {
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .contextMenu {
-            if !entry.isDirectory {
-                Button {
-                    previewEntry = entry
-                } label: {
-                    Label("Preview", systemImage: "doc.text.magnifyingglass")
-                }
-
-                if entry.name.lowercased().hasSuffix(".zip") || entry.name.lowercased().hasSuffix(".ipa") {
-                    Button {
-                        extractArchive(entry)
-                    } label: {
-                        Label("Extract to Documents", systemImage: "doc.zipper")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(collectionBookmarks) { item in
+                            Button {
+                                navigate(to: item.path)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: item.icon)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.purple)
+                                    Text(item.title)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundColor(.white)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(white: 0.12))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .strokeBorder(Color.purple.opacity(0.3), lineWidth: 1)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
-
-                Button {
-                    prepareShare(for: entry)
-                } label: {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
             }
-        }
-    }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(white: 0.07))
 
-    private func iconName(for name: String) -> String {
-        let ext = (name as NSString).pathExtension.lowercased()
-        switch ext {
-        case "plist", "json", "xml", "yml", "yaml", "txt", "log", "md", "c", "h", "m", "swift":
-            return "doc.text"
-        case "png", "jpg", "jpeg", "heic", "gif":
-            return "photo"
-        case "zip", "ipa", "deb", "tar", "gz":
-            return "doc.zipper"
-        case "dylib", "axf", "bin", "img":
-            return "cpu"
-        default:
-            return "doc"
-        }
-    }
-
-    private func navigate(to path: String) {
-        currentPath = path
-        searchText = ""
-        reloadDirectory()
-    }
-
-    private func reloadDirectory() {
-        errorMessage = nil
-        let targetPath = currentPath
-        let shouldUseVFS = activeUsesVFS
-
-        if shouldUseVFS {
-            guard mgr.vfsready else {
-                entries = []
-                errorMessage = "VFS not ready (run exploit first or switch to FileManager)."
-                return
+            if let errorMessage {
+                errorCard(errorMessage)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
             }
-            if let vfsItems = mgr.vfslistdir(path: targetPath) {
-                entries = vfsItems.map { item in
-                    let full = joinPath(targetPath, item.name)
-                    let sz = item.isDir ? nil : mgr.vfssize(path: full)
-                    return BrowserEntry(
-                        id: full,
-                        path: full,
-                        name: item.name,
-                        isDirectory: item.isDir,
-                        size: sz,
-                        usesVFS: true
-                    )
-                }.sorted { lhs, rhs in
-                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
-                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-                }
-                globallogger.log("[BROWSER] Listed \(targetPath) via VFS (\(entries.count) items)")
+
+            if sortedAndFilteredEntries.isEmpty {
+                emptyStateView
+            } else if isGridView {
+                gridContent
             } else {
-                entries = []
-                errorMessage = "VFS listdir failed for \(targetPath)"
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(sortedAndFilteredEntries) { entry in
+                            let style = badgeStyle(for: entry)
+                            Button {
+                                if entry.isDirectory {
+                                    navigate(to: entry.path)
+                                } else {
+                                    previewEntry = entry
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Circle()
+                                        .fill(style.color.opacity(0.2))
+                                        .frame(width: 40, height: 40)
+                                        .overlay(
+                                            Image(systemName: style.icon)
+                                                .font(.system(size: 16, weight: .semibold))
+                                                .foregroundColor(style.color)
+                                        )
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.name)
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        Text(entry.isDirectory ? "Folder" : entry.formattedSize)
+                                            .font(.caption2)
+                                            .foregroundColor(.gray)
+                                    }
+
+                                    Spacer()
+
+                                    if entry.isDirectory {
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2)
+                                            .foregroundColor(.purple)
+                                    }
+                                }
+                                .padding(12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .fill(Color(white: 0.1))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                entryContextMenu(for: entry)
+                            }
+                        }
+                    }
+                    .padding(14)
+                }
             }
-        } else {
-            let fm = FileManager.default
-            do {
-                let names = try fm.contentsOfDirectory(atPath: targetPath)
-                var list: [BrowserEntry] = []
-                for name in names {
-                    let full = joinPath(targetPath, name)
-                    var isDir: ObjCBool = false
-                    _ = fm.fileExists(atPath: full, isDirectory: &isDir)
-                    let attrs = try? fm.attributesOfItem(atPath: full)
-                    let sz = (attrs?[.size] as? NSNumber)?.int64Value
-                    list.append(
-                        BrowserEntry(
-                            id: full,
-                            path: full,
-                            name: name,
-                            isDirectory: isDir.boolValue,
-                            size: isDir.boolValue ? nil : sz,
-                            usesVFS: false
-                        )
+
+            bottomStatusBar
+        }
+    }
+
+    // MARK: - Skin 3: Root Explorer
+
+    private var rootExplorerSkinBody: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("ROOT EXPLORER")
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(.purple)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.purple.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                    Text(activeUsesVFS ? "VFS: READY" : "FS: SANDBOX")
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(activeUsesVFS ? .green : .gray)
+
+                    Spacer()
+
+                    Picker("Backend", selection: $backend) {
+                        ForEach(BrowserBackend.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
+                    .onChange(of: backend) { _ in
+                        reloadDirectory()
+                    }
+                }
+
+                Text(currentPath)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.white)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(white: 0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(Color.purple.opacity(0.35), lineWidth: 1)
+                            )
                     )
-                }
-                entries = list.sorted { lhs, rhs in
-                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
-                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-                }
-                globallogger.log("[BROWSER] Listed \(targetPath) via FileManager (\(entries.count) items)")
-            } catch {
-                entries = []
-                errorMessage = error.localizedDescription
             }
-        }
-    }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(white: 0.06))
 
-    private func loadData(for entry: BrowserEntry, maxSize: Int = 512 * 1024) -> Data? {
-        if entry.usesVFS {
-            return mgr.vfsread(path: entry.path, maxSize: maxSize)
-        }
-        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: entry.path)) else {
-            return nil
-        }
-        defer { try? handle.close() }
-        return try? handle.read(upToCount: maxSize)
-    }
-
-    private func extractArchive(_ entry: BrowserEntry) {
-        globallogger.log("[BROWSER] Extracting \(entry.path)...")
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let data = loadData(for: entry, maxSize: 128 * 1024 * 1024) else {
-                DispatchQueue.main.async {
-                    errorMessage = "Could not read archive \(entry.name)"
-                }
-                return
+            if let errorMessage {
+                errorCard(errorMessage)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
             }
-            do {
-                let archive = try ZipArchive(data: data)
-                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let baseName = (entry.name as NSString).deletingPathExtension
-                let destRoot = docs.appendingPathComponent("Extracted_\(baseName)_\(UUID().uuidString.prefix(6))", isDirectory: true)
-                try FileManager.default.createDirectory(at: destRoot, withIntermediateDirectories: true)
 
-                for zEntry in archive.entries {
-                    let norm = zEntry.path.replacingOccurrences(of: "\\", with: "/")
-                    guard !norm.contains("..") else { continue }
-                    let outURL = destRoot.appendingPathComponent(norm)
-                    if zEntry.isDirectory {
-                        try? FileManager.default.createDirectory(at: outURL, withIntermediateDirectories: true)
-                    } else {
-                        try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        let extracted = try archive.extract(zEntry)
-                        try extracted.write(to: outURL)
-                    }
-                }
-                globallogger.log("[BROWSER] Extracted \(entry.name) to \(destRoot.path)")
-                DispatchQueue.main.async {
-                    mgr.emitResult(title: "Extracted", body: "Saved to:\n\(destRoot.path)", ok: true, icon: "doc.zipper")
-                }
-            } catch {
-                globallogger.log("[BROWSER] Extract failed: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    errorMessage = error.localizedDescription
-                }
-            }
-        }
-    }
+            if sortedAndFilteredEntries.isEmpty {
+                emptyStateView
+            } else if isGridView {
+                gridContent
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(sortedAndFilteredEntries) { entry in
+                            let style = badgeStyle(for: entry)
+                            Button {
+                                if entry.isDirectory {
+                                    navigate(to: entry.path)
+                                } else {
+                                    previewEntry = entry
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: style.icon)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(entry.isDirectory ? .purple : style.color)
+                                        .frame(width: 24)
 
-    private func prepareShare(for entry: BrowserEntry) {
-        if !entry.usesVFS {
-            shareURL = URL(fileURLWithPath: entry.path)
-            return
-        }
-        guard let data = loadData(for: entry, maxSize: 32 * 1024 * 1024) else {
-            errorMessage = "Unable to read \(entry.name) via VFS for sharing."
-            return
-        }
-        let tmpURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(entry.name)
-        do {
-            try data.write(to: tmpURL)
-            shareURL = tmpURL
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-}
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.name)
+                                            .font(.system(.subheadline, design: .monospaced))
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        Text(entry.isDirectory ? "dir • \(entry.usesVFS ? "vfs" : "fs")" : "\(entry.formattedSize.isEmpty ? "0 B" : entry.formattedSize) • \(entry.usesVFS ? "vfs" : "fs")")
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundColor(.gray)
+                                    }
 
-private struct BrowserPreviewSheet: View {
-    @EnvironmentObject private var mgr: controllermgr
-    @Environment(\.dismiss) private var dismiss
+                                    Spacer()
 
-    let entry: BrowserEntry
-    let usesVFS: Bool
+                                    if entry.isDirectory {
+                                        Text(">")
+                                            .font(.system(.caption, design: .monospaced).weight(.bold))
+                                            .foregroundColor(.purple)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(Color(white: 0.04))
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                entryContextMenu(for: entry)
+                            }
 
-    @State private var image: UIImage?
-    @State private var text: String = "Loading..."
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let image {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFit()
-                            .padding()
-                    }
-                } else {
-                    ScrollView {
-                        Text(text)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                            .textSelection(.enabled)
+                            Divider().background(Color.white.opacity(0.08))
+                        }
                     }
                 }
             }
-            .navigationTitle(entry.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+
+            bottomStatusBar
+        }
+    }
+
+    // MARK: - Shared Header, Breadcrumbs, List/Grid & Drawer
+
+    private var headerBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(activeUsesVFS ? Color.green : Color.purple)
+                    .frame(width: 8, height: 8)
+                Text(activeUsesVFS ? "VFS Active" : "FileManager")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(white: 0.12))
+            .clipShape(Capsule())
+
+            Spacer()
+
+            Picker("Backend", selection: $backend) {
+                ForEach(BrowserBackend.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
             }
-            .task {
-                load()
+            .pickerStyle(.segmented)
+            .frame(width: 170)
+            .onChange(of: backend) { _ in
+                reloadDirectory()
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color(white: 0.06))
     }
 
-    private func load() {
-        let cap = 256 * 1024
-        let data: Data?
-        if usesVFS {
-            data = mgr.vfsread(path: entry.path, maxSize: cap)
-        } else {
-            let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: entry.path))
-            data = try? handle?.read(upToCount: cap)
-            try? handle?.close()
-        }
+    private var breadcrumbBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(breadcrumbs.enumerated()), id: \.offset) { index, crumb in
+                        Button {
+                            navigate(to: crumb.path)
+                        } label: {
+                            HStack(spacing: 4) {
+                                if index == 0 {
+                                    Image(systemName: "internaldrive.fill")
+                                        .font(.caption2)
+                                }
+                                Text(crumb.title)
+                                    .font(.caption.weight(index == breadcrumbs.count - 1 ? .semibold : .regular))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                index == breadcrumbs.count - 1
+                                    ? Color.purple.opacity(0.28)
+                                    : Color(white: 0.12)
+                            )
+                            .foregroundColor(index == breadcrumbs.count - 1 ? .white : .gray)
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(
+                                        index == breadcrumbs.count - 1 ? Color.purple.opacity(0.6) : Color.clear,
+                                        lineWidth: 1
+                                    )
+                            )
+                        }
+                        .id(index)
 
-        guard let data else {
-            text = "Unable to read file (\(usesVFS ? "VFS" : "FileManager"))."
-            return
-        }
-
-        if let img = UIImage(data: data) {
-            image = img
-            return
-        }
-
-        if let utf8 = String(data: data, encoding: .utf8) {
-            text = data.count >= cap ? utf8 + "\n\n... (truncated at 256 KB)" : utf8
-            return
-        }
-
-        let hexBytes = data.prefix(2048).map { String(format: "%02X", $0) }.joined(separator: " ")
-        text = "Binary (\(data.count) bytes read):\n\n" + hexBytes
-    }
-}
-
-private struct ShareSheetView: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
+                        if index < breadcrumbs.count - 1 {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.gray.opacity(0.6))
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            }
+            .background(Color(white: 0.08))
+            .overlay(
