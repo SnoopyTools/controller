@@ -1,0 +1,71 @@
+# Codemagic build for controller — mirrors .github/workflows/build.yml
+# Produces controller.ipa (ldid-signed with controller/controller.entitlements)
+
+workflows:
+  controller-ipa:
+    name: controller IPA
+    instance_type: mac_mini_m2      # free-tier machine
+    max_build_duration: 30          # minutes
+
+    environment:
+      xcode: latest                 # GitHub uses 16.2; set e.g. "16.4" here if latest causes errors
+
+    triggering:
+      events:
+        - push
+        - tag
+      branch_patterns:
+        - pattern: main
+          include: true
+      tag_patterns:
+        - pattern: "v*"
+          include: true
+
+    scripts:
+      - name: Show Xcode version
+        script: xcodebuild -version
+
+      - name: Fetch ChOma headers
+        script: |
+          git clone --depth=1 https://github.com/opa334/ChOma.git /tmp/ChOma
+          cp /tmp/ChOma/src/*.h controller/headers/
+
+      - name: Install ldid
+        script: brew install ldid
+
+      - name: Build archive (unsigned)
+        script: |
+          xcodebuild archive \
+            -project controller.xcodeproj \
+            -scheme controller \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$CM_BUILD_DIR/build/controller.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            LIBRARY_SEARCH_PATHS="$CM_BUILD_DIR/controller/lib"
+
+      - name: Package and sign IPA with ldid
+        script: |
+          APP_PATH=$(find "$CM_BUILD_DIR/build/controller.xcarchive" -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found in archive:"
+            find "$CM_BUILD_DIR/build/controller.xcarchive" -type f | head -40
+            exit 1
+          fi
+          echo "Found app: $APP_PATH"
+          IPA_DIR="$CM_BUILD_DIR/build/ipa"
+          rm -rf "$IPA_DIR" && mkdir -p "$IPA_DIR/Payload"
+          cp -r "$APP_PATH" "$IPA_DIR/Payload/"
+
+          BINARY="$IPA_DIR/Payload/controller.app/controller"
+          ldid -Scontroller/controller.entitlements "$BINARY"
+
+          cd "$IPA_DIR"
+          zip -qry "$CM_BUILD_DIR/controller.ipa" Payload
+          ls -lh "$CM_BUILD_DIR/controller.ipa"
+
+    artifacts:
+      - controller.ipa
