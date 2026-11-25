@@ -613,3 +613,621 @@ struct FileBrowserView: View {
             }
             .background(Color(white: 0.08))
             .overlay(
+                Divider().background(Color.white.opacity(0.08)),
+                alignment: .bottom
+            )
+            .onChange(of: currentPath) { _ in
+                withAnimation {
+                    proxy.scrollTo(breadcrumbs.count - 1, anchor: .trailing)
+                }
+            }
+        }
+    }
+
+    private var listContent: some View {
+        ScrollView {
+            LazyVStack(spacing: 1) {
+                ForEach(sortedAndFilteredEntries) { entry in
+                    solidListRow(for: entry)
+                }
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
+    private var gridContent: some View {
+        let columns = [
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 12)
+        ]
+        return ScrollView {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(sortedAndFilteredEntries) { entry in
+                    solidGridCell(for: entry)
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    @ViewBuilder
+    private func solidListRow(for entry: BrowserEntry) -> some View {
+        let style = badgeStyle(for: entry)
+        Button {
+            if entry.isDirectory {
+                navigate(to: entry.path)
+            } else {
+                previewEntry = entry
+            }
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(style.color.opacity(0.2))
+                        .frame(width: 42, height: 42)
+                    Image(systemName: style.icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(style.color)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.name)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+
+                    HStack(spacing: 6) {
+                        Text(entry.isDirectory ? "Folder" : (entry.fileExtension.isEmpty ? "File" : entry.fileExtension.uppercased()))
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+
+                        if !entry.isDirectory && !entry.formattedSize.isEmpty {
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.gray.opacity(0.6))
+                            Text(entry.formattedSize)
+                                .font(.caption2)
+                                .foregroundColor(.gray)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                if entry.isDirectory {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.gray.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Color(white: 0.05))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            entryContextMenu(for: entry)
+        }
+    }
+
+    @ViewBuilder
+    private func solidGridCell(for entry: BrowserEntry) -> some View {
+        let style = badgeStyle(for: entry)
+        Button {
+            if entry.isDirectory {
+                navigate(to: entry.path)
+            } else {
+                previewEntry = entry
+            }
+        } label: {
+            VStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(style.color.opacity(0.18))
+                        .frame(width: 54, height: 54)
+                    Image(systemName: style.icon)
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(style.color)
+                }
+
+                Text(entry.name)
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+
+                Text(entry.isDirectory ? "Folder" : entry.formattedSize)
+                    .font(.caption2)
+                    .foregroundColor(.gray)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color(white: 0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            entryContextMenu(for: entry)
+        }
+    }
+
+    @ViewBuilder
+    private func entryContextMenu(for entry: BrowserEntry) -> some View {
+        Button {
+            UIPasteboard.general.string = entry.path
+            globallogger.log("[BROWSER] Copied path: \(entry.path)")
+        } label: {
+            Label("Copy Path", systemImage: "doc.on.doc")
+        }
+
+        if !entry.isDirectory {
+            Button {
+                previewEntry = entry
+            } label: {
+                Label("Preview", systemImage: "doc.text.magnifyingglass")
+            }
+
+            if entry.name.lowercased().hasSuffix(".zip") || entry.name.lowercased().hasSuffix(".ipa") {
+                Button {
+                    extractArchive(entry)
+                } label: {
+                    Label("Extract to Documents", systemImage: "doc.zipper")
+                }
+            }
+
+            Button {
+                prepareShare(for: entry)
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+        }
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: errorMessage == nil ? "folder" : "lock.shield")
+                .font(.system(size: 40))
+                .foregroundColor(.purple.opacity(0.6))
+            Text(errorMessage == nil ? "Empty Directory" : "Cannot Read Directory")
+                .font(.headline)
+                .foregroundColor(.white)
+            Text(errorMessage == nil ? "No files or folders in \(displayTitle)" : "Switch backend or jump to another folder from the sidebar.")
+                .font(.caption)
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            Spacer()
+        }
+    }
+
+    private func errorCard(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+                )
+        )
+    }
+
+    private var bottomStatusBar: some View {
+        let folderCount = sortedAndFilteredEntries.filter { $0.isDirectory }.count
+        let fileCount = sortedAndFilteredEntries.count - folderCount
+        return HStack {
+            Text("\(folderCount) folders, \(fileCount) files")
+                .font(.caption2)
+                .foregroundColor(.gray)
+            Spacer()
+            Text(currentPath)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundColor(.gray.opacity(0.8))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color(white: 0.07))
+        .overlay(
+            Divider().background(Color.white.opacity(0.08)),
+            alignment: .top
+        )
+    }
+
+    private var drawerOverlay: some View {
+        ZStack(alignment: .leading) {
+            Color.black.opacity(0.6)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showDrawer = false
+                    }
+                }
+
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color.purple.opacity(0.25))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "folder.fill")
+                                .font(.title2)
+                                .foregroundColor(.purple)
+                        }
+                        Spacer()
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showDrawer = false
+                            }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .foregroundColor(.gray)
+                        }
+                    }
+                    Text("Controller Explorer")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("Skin: \(skin.rawValue)")
+                        .font(.caption)
+                        .foregroundColor(.purple)
+                }
+                .padding(18)
+                .background(Color(white: 0.11))
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        drawerSection(title: "COLLECTIONS", items: collectionBookmarks)
+                        Divider().background(Color.white.opacity(0.1))
+                        drawerSection(title: "STORAGE & SYSTEM", items: storageBookmarks)
+                    }
+                    .padding(14)
+                }
+            }
+            .frame(width: 285)
+            .background(Color(white: 0.08))
+            .overlay(
+                Divider().background(Color.purple.opacity(0.3)),
+                alignment: .trailing
+            )
+            .transition(.move(edge: .leading))
+        }
+    }
+
+    @ViewBuilder
+    private func drawerSection(title: String, items: [QuickBookmark]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundColor(.gray)
+                .padding(.horizontal, 8)
+
+            ForEach(items) { item in
+                let isSelected = currentPath == item.path
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showDrawer = false
+                    }
+                    navigate(to: item.path)
+                } label: {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(item.tint.opacity(0.2))
+                                .frame(width: 32, height: 32)
+                            Image(systemName: item.icon)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(item.tint)
+                        }
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.title)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundColor(.white)
+                            Text(item.subtitle)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.gray)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(isSelected ? Color.purple.opacity(0.22) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Helpers & Existing Filesystem Logic
+
+    private var displayTitle: String {
+        if currentPath == "/" { return "Root" }
+        let name = (currentPath as NSString).lastPathComponent
+        return name.isEmpty ? currentPath : name
+    }
+
+    private func parentPath(of path: String) -> String {
+        if path == "/" { return "/" }
+        let parent = (path as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
+    }
+
+    private func joinPath(_ base: String, _ child: String) -> String {
+        if base == "/" { return "/\(child)" }
+        return (base as NSString).appendingPathComponent(child)
+    }
+
+    private func badgeStyle(for entry: BrowserEntry) -> (icon: String, color: Color) {
+        if entry.isDirectory {
+            return ("folder.fill", .purple)
+        }
+        switch entry.fileExtension {
+        case "plist", "json", "xml", "yml", "yaml", "txt", "log", "md", "c", "h", "m", "swift":
+            return ("doc.text.fill", .blue)
+        case "png", "jpg", "jpeg", "heic", "gif", "webp":
+            return ("photo.fill", .pink)
+        case "mp4", "mov", "m4v", "avi", "mkv":
+            return ("film.fill", .orange)
+        case "mp3", "m4a", "wav", "aac", "flac":
+            return ("music.note", .teal)
+        case "zip", "ipa", "deb", "tar", "gz":
+            return ("doc.zipper", .indigo)
+        case "dylib", "axf", "bin", "img":
+            return ("cpu.fill", .green)
+        default:
+            return ("doc.fill", .gray)
+        }
+    }
+
+    private func navigate(to path: String) {
+        currentPath = path
+        searchText = ""
+        reloadDirectory()
+    }
+
+    private func reloadDirectory() {
+        errorMessage = nil
+        let targetPath = currentPath
+        let shouldUseVFS = activeUsesVFS
+
+        if shouldUseVFS {
+            guard mgr.vfsready else {
+                entries = []
+                errorMessage = "VFS not ready (run exploit first or switch to FileManager)."
+                return
+            }
+            if let vfsItems = mgr.vfslistdir(path: targetPath) {
+                entries = vfsItems.map { item in
+                    let full = joinPath(targetPath, item.name)
+                    let sz = item.isDir ? nil : mgr.vfssize(path: full)
+                    return BrowserEntry(
+                        id: full,
+                        path: full,
+                        name: item.name,
+                        isDirectory: item.isDir,
+                        size: sz,
+                        usesVFS: true
+                    )
+                }
+                globallogger.log("[BROWSER] Listed \(targetPath) via VFS (\(entries.count) items)")
+            } else {
+                entries = []
+                errorMessage = "VFS listdir failed for \(targetPath)"
+            }
+        } else {
+            let fm = FileManager.default
+            do {
+                let names = try fm.contentsOfDirectory(atPath: targetPath)
+                var list: [BrowserEntry] = []
+                for name in names {
+                    let full = joinPath(targetPath, name)
+                    var isDir: ObjCBool = false
+                    _ = fm.fileExists(atPath: full, isDirectory: &isDir)
+                    let attrs = try? fm.attributesOfItem(atPath: full)
+                    let sz = (attrs?[.size] as? NSNumber)?.int64Value
+                    list.append(
+                        BrowserEntry(
+                            id: full,
+                            path: full,
+                            name: name,
+                            isDirectory: isDir.boolValue,
+                            size: isDir.boolValue ? nil : sz,
+                            usesVFS: false
+                        )
+                    )
+                }
+                entries = list
+                globallogger.log("[BROWSER] Listed \(targetPath) via FileManager (\(entries.count) items)")
+            } catch {
+                entries = []
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func loadData(for entry: BrowserEntry, maxSize: Int = 512 * 1024) -> Data? {
+        if entry.usesVFS {
+            return mgr.vfsread(path: entry.path, maxSize: maxSize)
+        }
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: entry.path)) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        return try? handle.read(upToCount: maxSize)
+    }
+
+    private func extractArchive(_ entry: BrowserEntry) {
+        globallogger.log("[BROWSER] Extracting \(entry.path)...")
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let data = loadData(for: entry, maxSize: 128 * 1024 * 1024) else {
+                DispatchQueue.main.async {
+                    errorMessage = "Could not read archive \(entry.name)"
+                }
+                return
+            }
+            do {
+                let archive = try ZipArchive(data: data)
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let baseName = (entry.name as NSString).deletingPathExtension
+                let destRoot = docs.appendingPathComponent("Extracted_\(baseName)_\(UUID().uuidString.prefix(6))", isDirectory: true)
+                try FileManager.default.createDirectory(at: destRoot, withIntermediateDirectories: true)
+
+                for zEntry in archive.entries {
+                    let norm = zEntry.path.replacingOccurrences(of: "\\", with: "/")
+                    guard !norm.contains("..") else { continue }
+                    let outURL = destRoot.appendingPathComponent(norm)
+                    if zEntry.isDirectory {
+                        try? FileManager.default.createDirectory(at: outURL, withIntermediateDirectories: true)
+                    } else {
+                        try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        let extracted = try archive.extract(zEntry)
+                        try extracted.write(to: outURL)
+                    }
+                }
+                globallogger.log("[BROWSER] Extracted \(entry.name) to \(destRoot.path)")
+                DispatchQueue.main.async {
+                    mgr.emitResult(title: "Extracted", body: "Saved to:\n\(destRoot.path)", ok: true, icon: "doc.zipper")
+                }
+            } catch {
+                globallogger.log("[BROWSER] Extract failed: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func prepareShare(for entry: BrowserEntry) {
+        if !entry.usesVFS {
+            shareURL = URL(fileURLWithPath: entry.path)
+            return
+        }
+        guard let data = loadData(for: entry, maxSize: 32 * 1024 * 1024) else {
+            errorMessage = "Unable to read \(entry.name) via VFS for sharing."
+            return
+        }
+        let tmpURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(entry.name)
+        do {
+            try data.write(to: tmpURL)
+            shareURL = tmpURL
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct BrowserPreviewSheet: View {
+    @EnvironmentObject private var mgr: controllermgr
+    @Environment(\.dismiss) private var dismiss
+
+    let entry: BrowserEntry
+    let usesVFS: Bool
+
+    @State private var image: UIImage?
+    @State private var text: String = "Loading..."
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                if let image {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .padding()
+                    }
+                } else {
+                    ScrollView {
+                        Text(text)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .navigationTitle(entry.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(.purple)
+                }
+            }
+            .task {
+                load()
+            }
+        }
+    }
+
+    private func load() {
+        let cap = 256 * 1024
+        let data: Data?
+        if usesVFS {
+            data = mgr.vfsread(path: entry.path, maxSize: cap)
+        } else {
+            let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: entry.path))
+            data = try? handle?.read(upToCount: cap)
+            try? handle?.close()
+        }
+
+        guard let data else {
+            text = "Unable to read file (\(usesVFS ? "VFS" : "FileManager"))."
+            return
+        }
+
+        if let img = UIImage(data: data) {
+            image = img
+            return
+        }
+
+        if let utf8 = String(data: data, encoding: .utf8) {
+            text = data.count >= cap ? utf8 + "\n\n... (truncated at 256 KB)" : utf8
+            return
+        }
+
+        let hexBytes = data.prefix(2048).map { String(format: "%02X", $0) }.joined(separator: " ")
+        text = "Binary (\(data.count) bytes read):\n\n" + hexBytes
+    }
+}
+
+private struct ShareSheetView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
