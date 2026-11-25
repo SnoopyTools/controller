@@ -2,6 +2,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+@interface VarCleanBridge : NSObject
++ (NSDictionary *)loadRulesNamed:(NSString *)resourceName
+                        inBundle:(NSBundle *)bundle
+                           error:(NSError * _Nullable * _Nullable)error;
++ (BOOL)probePathExists:(NSString *)path
+            isDirectory:(BOOL *)isDirectory
+              isSymlink:(BOOL *)isSymlink;
+@end
+
 @implementation VarCleanBridge
 
 + (NSDictionary *)loadRulesNamed:(NSString *)resourceName
